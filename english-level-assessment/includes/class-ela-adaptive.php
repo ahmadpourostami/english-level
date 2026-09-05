@@ -19,7 +19,18 @@ class ELA_Adaptive_API {
     private function key($token){return 'ela_test_'.hash('sha256',$token);}
     private function load($token){if(!is_string($token)||strlen($token)<20)return false;$state=get_transient($this->key($token));return is_array($state)?$state:false;}
     private function save($token,$state){set_transient($this->key($token),$state,$this->ttl);}
-    private function public_question($q){return ['id'=>(int)$q->id,'question'=>$q->question,'options'=>['A'=>$q->option_a,'B'=>$q->option_b,'C'=>$q->option_c,'D'=>$q->option_d],'level'=>$q->level,'skill'=>$q->skill];}
+    private function public_question($q){
+        $media=ELA_Media::get($q->id);
+        return [
+            'id'=>(int)$q->id,
+            'question'=>$q->question,
+            'options'=>['A'=>$q->option_a,'B'=>$q->option_b,'C'=>$q->option_c,'D'=>$q->option_d],
+            'level'=>$q->level,
+            'skill'=>$q->skill,
+            'audio_url'=>$media&&!empty($media->audio_url)?esc_url_raw($media->audio_url):'',
+            'passage'=>$media&&!empty($media->passage)?wp_kses_post($media->passage):''
+        ];
+    }
     private function next_question($state){
         global $wpdb;$table=$wpdb->prefix.'ela_questions';$used=array_map('absint',$state['asked']);$current=max(0,min(5,(int)$state['level_index']));$level=$this->levels[$current];$counts=$state['skill_counts'];$skills=$this->skills;usort($skills,function($a,$b)use($counts){return ($counts[$a]??0)<=>($counts[$b]??0);});$preferred=$skills[0];$where_not=$used?' AND id NOT IN ('.implode(',',$used).')':'';
         $queries=[$wpdb->prepare("SELECT * FROM $table WHERE level=%s AND skill=%s$where_not ORDER BY RAND() LIMIT 1",$level,$preferred),$wpdb->prepare("SELECT * FROM $table WHERE level=%s$where_not ORDER BY RAND() LIMIT 1",$level),$wpdb->prepare("SELECT * FROM $table WHERE skill=%s$where_not ORDER BY RAND() LIMIT 1",$preferred)];
