@@ -36,6 +36,10 @@ add_action('admin_menu', function(){
     add_submenu_page('ela-questions', 'Question Media', 'Listening / Reading Media', 'manage_options', 'ela-media', 'ela_media_admin_page');
 });
 
+add_action('admin_enqueue_scripts', function($hook){
+    if ($hook === 'english-level_page_ela-media') wp_enqueue_media();
+});
+
 add_action('admin_post_ela_save_media', function(){
     if (!current_user_can('manage_options') || !check_admin_referer('ela_save_media')) wp_die('Unauthorized');
     $question_id = absint($_POST['question_id'] ?? 0);
@@ -53,10 +57,12 @@ function ela_media_admin_page() {
     $question_id = absint($_GET['question_id'] ?? 0);
     $questions = $wpdb->get_results("SELECT id,question,level,skill FROM $table ORDER BY FIELD(level,'A1','A2','B1','B2','C1','C2'),id ASC");
     $media = $question_id ? ELA_Media::get($question_id) : null;
+    $selected_q = null;
+    foreach ($questions as $q) { if ((int)$q->id === $question_id) { $selected_q = $q; break; } }
     ?>
     <div class="wrap">
         <h1>Listening / Reading Media</h1>
-        <p>برای سؤال‌های Listening فایل صوتی و برای سؤال‌های Reading متن passage را ثبت کن. لینک صوت باید از Media Library یا یک URL معتبر وردپرس باشد.</p>
+        <p>برای Listening فایل صوتی و برای Reading متن passage را ثبت کن. با دکمه زیر می‌توانی فایل MP3 را مستقیم از Media Library انتخاب یا آپلود کنی.</p>
         <form method="get" style="margin:20px 0">
             <input type="hidden" name="page" value="ela-media">
             <select name="question_id" onchange="this.form.submit()" style="min-width:420px">
@@ -66,31 +72,38 @@ function ela_media_admin_page() {
                 <?php endforeach; ?>
             </select>
         </form>
-        <?php if ($question_id && $media !== null): ?>
+        <?php if ($question_id && $selected_q): ?>
             <div class="card" style="max-width:900px;padding:20px">
                 <h2>Question #<?php echo (int)$question_id; ?></h2>
-                <?php $selected_q = null; foreach ($questions as $q) { if ((int)$q->id === $question_id) { $selected_q = $q; break; } } ?>
-                <?php if ($selected_q): ?><p><strong><?php echo esc_html($selected_q->level.' · '.ucfirst($selected_q->skill)); ?></strong><br><?php echo esc_html($selected_q->question); ?></p><?php endif; ?>
+                <p><strong><?php echo esc_html($selected_q->level.' · '.ucfirst($selected_q->skill)); ?></strong><br><?php echo esc_html($selected_q->question); ?></p>
                 <?php if (!empty($_GET['saved'])): ?><div class="notice notice-success"><p>Media settings saved.</p></div><?php endif; ?>
                 <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                     <input type="hidden" name="action" value="ela_save_media">
                     <input type="hidden" name="question_id" value="<?php echo (int)$question_id; ?>">
                     <?php wp_nonce_field('ela_save_media'); ?>
-                    <p><label><strong>Audio URL</strong></label><br><input type="url" name="audio_url" class="large-text" value="<?php echo esc_attr($media->audio_url ?? ''); ?>" placeholder="https://example.com/audio.mp3"></p>
+                    <p><label for="ela-audio-url"><strong>Audio file</strong></label><br>
+                        <input id="ela-audio-url" type="url" name="audio_url" class="large-text" value="<?php echo esc_attr($media->audio_url ?? ''); ?>" placeholder="Choose an MP3 from Media Library">
+                        <button type="button" class="button" id="ela-select-audio" style="margin-top:8px">Choose / Upload Audio</button>
+                    </p>
                     <p><label><strong>Reading passage</strong></label><br><textarea name="passage" rows="10" class="large-text" placeholder="Paste the reading passage here..."><?php echo esc_textarea($media->passage ?? ''); ?></textarea></p>
                     <?php submit_button('Save Media'); ?>
                 </form>
             </div>
+            <script>
+            jQuery(function($){
+                $('#ela-select-audio').on('click', function(e){
+                    e.preventDefault();
+                    var frame = wp.media({title:'Select Listening Audio',button:{text:'Use this audio'},library:{type:'audio'},multiple:false});
+                    frame.on('select', function(){
+                        var attachment = frame.state().get('selection').first().toJSON();
+                        $('#ela-audio-url').val(attachment.url || '');
+                    });
+                    frame.open();
+                });
+            });
+            </script>
         <?php elseif ($question_id): ?>
-            <div class="card" style="max-width:900px;padding:20px">
-                <h2>Question #<?php echo (int)$question_id; ?></h2>
-                <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
-                    <input type="hidden" name="action" value="ela_save_media"><input type="hidden" name="question_id" value="<?php echo (int)$question_id; ?>"><?php wp_nonce_field('ela_save_media'); ?>
-                    <p><label><strong>Audio URL</strong></label><br><input type="url" name="audio_url" class="large-text" placeholder="https://example.com/audio.mp3"></p>
-                    <p><label><strong>Reading passage</strong></label><br><textarea name="passage" rows="10" class="large-text" placeholder="Paste the reading passage here..."></textarea></p>
-                    <?php submit_button('Save Media'); ?>
-                </form>
-            </div>
+            <div class="notice notice-error"><p>Question not found.</p></div>
         <?php endif; ?>
     </div>
     <?php
