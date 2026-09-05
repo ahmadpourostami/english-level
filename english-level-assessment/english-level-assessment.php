@@ -2,12 +2,12 @@
 /**
  * Plugin Name: English Level Assessment
  * Description: CEFR English placement test with secure adaptive evaluation, skill scoring and saved user results.
- * Version: 0.4.1
+ * Version: 0.5.0
  * Author: Ahmad Pourostami
  * License: GPL-2.0-or-later
  */
 if (!defined('ABSPATH')) exit;
-define('ELA_VERSION','0.4.1');
+define('ELA_VERSION','0.5.0');
 require_once __DIR__.'/includes/class-ela-db.php';
 
 class English_Level_Assessment {
@@ -16,6 +16,7 @@ class English_Level_Assessment {
 
     public function __construct(){
         register_activation_hook(__FILE__,[$this,'activate']);
+        add_action('plugins_loaded',[$this,'maybe_upgrade']);
         add_action('admin_menu',[$this,'admin_menu']);
         add_action('admin_post_ela_save_question',[$this,'save_question']);
         add_action('admin_post_ela_delete_question',[$this,'delete_question']);
@@ -24,6 +25,7 @@ class English_Level_Assessment {
         add_action('wp_ajax_ela_save_result',[$this,'save_result']);
         add_action('wp_ajax_nopriv_ela_save_result',[$this,'save_result']);
         add_shortcode('english_level_test',[$this,'shortcode']);
+        add_shortcode('english_level_result',[$this,'result_shortcode']);
         add_action('wp_enqueue_scripts',[$this,'assets']);
     }
 
@@ -37,25 +39,33 @@ class English_Level_Assessment {
         $count=(int)$wpdb->get_var("SELECT COUNT(*) FROM $table");
         if(!$count)$this->seed_questions(); elseif($count<12)$this->seed_advanced();
         $this->create_pages();
+        update_option('ela_version',ELA_VERSION);
+    }
+
+    public function maybe_upgrade(){
+        $installed=get_option('ela_version','0.0.0');
+        if(version_compare($installed,ELA_VERSION,'<')){
+            ELA_DB::install_results();
+            $this->create_pages();
+            update_option('ela_version',ELA_VERSION);
+        }
     }
 
     private function create_pages(){
         $pages=[
             'test'=>['title'=>'English Level Test','content'=>'[english_level_test]'],
-            'result'=>['title'=>'English Level Result','content'=>'<div class="ela-result-page"><h2>Your English Level Result</h2><p>Complete the English Level Test to receive your estimated CEFR level and skill breakdown.</p></div>']
+            'result'=>['title'=>'English Level Result','content'=>'[english_level_result]']
         ];
         foreach($pages as $key=>$page){
             $option='ela_page_'.$key;
             $saved_id=absint(get_option($option,0));
-            if($saved_id && get_post_status($saved_id)) continue;
+            if($saved_id && get_post_status($saved_id)){
+                if($key==='result' && get_post_field('post_content',$saved_id)!=='[english_level_result]') wp_update_post(['ID'=>$saved_id,'post_content'=>$page['content']]);
+                continue;
+            }
             $existing=get_page_by_title($page['title'],OBJECT,'page');
-            if($existing){update_option($option,(int)$existing->ID);continue;}
-            $page_id=wp_insert_post([
-                'post_title'=>$page['title'],
-                'post_content'=>$page['content'],
-                'post_status'=>'publish',
-                'post_type'=>'page'
-            ],true);
+            if($existing){update_option($option,(int)$existing->ID);if($key==='result' && get_post_field('post_content',$existing->ID)!=='[english_level_result]')wp_update_post(['ID'=>$existing->ID,'post_content'=>$page['content']]);continue;}
+            $page_id=wp_insert_post(['post_title'=>$page['title'],'post_content'=>$page['content'],'post_status'=>'publish','post_type'=>'page'],true);
             if(!is_wp_error($page_id)) update_option($option,(int)$page_id);
         }
     }
@@ -106,7 +116,7 @@ class English_Level_Assessment {
         $test_page_id=absint(get_option('ela_page_test',0));$result_page_id=absint(get_option('ela_page_result',0));
         ?>
         <div class="wrap"><h1>English Level Assessment</h1>
-        <p>شورت‌کد آزمون: <code>[english_level_test]</code></p>
+        <p>شورت‌کد آزمون: <code>[english_level_test]</code> | شورت‌کد نتیجه: <code>[english_level_result]</code></p>
         <p><strong>برگه‌ها:</strong> <?php if($test_page_id)echo '<a href="'.esc_url(get_permalink($test_page_id)).'" target="_blank">صفحه آزمون</a>';if($test_page_id&&$result_page_id)echo ' | ';if($result_page_id)echo '<a href="'.esc_url(get_permalink($result_page_id)).'" target="_blank">صفحه نتیجه</a>'; ?></p>
         <style>.ela-admin-grid{display:grid;grid-template-columns:repeat(7,minmax(100px,1fr));gap:10px;margin:20px 0}.ela-admin-card{background:#fff;border:1px solid #dcdcde;border-radius:8px;padding:14px}.ela-admin-card strong{display:block;font-size:22px;margin-top:5px}.ela-admin-form{background:#fff;border:1px solid #dcdcde;border-radius:8px;padding:20px;margin:20px 0}.ela-admin-form .ela-row{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.ela-admin-form input[type=text],.ela-admin-form textarea,.ela-admin-form select{width:100%}.ela-filter{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:18px 0}.ela-filter input,.ela-filter select{min-height:34px}.ela-question-cell{max-width:520px}.ela-actions{white-space:nowrap}.ela-danger{color:#b32d2e}@media(max-width:900px){.ela-admin-grid{grid-template-columns:repeat(3,1fr)}.ela-admin-form .ela-row{grid-template-columns:1fr}}</style>
         <div class="ela-admin-grid"><div class="ela-admin-card">Total<strong><?php echo (int)$total;?></strong></div><?php foreach($this->levels as $l):?><div class="ela-admin-card"><?php echo esc_html($l);?><strong><?php echo (int)($level_map[$l]??0);?></strong></div><?php endforeach;?></div>
@@ -126,8 +136,26 @@ class English_Level_Assessment {
     }
     public function delete_question(){ $id=absint($_GET['id']??0);if(!current_user_can('manage_options')||!$id||!wp_verify_nonce($_GET['_wpnonce']??'','ela_delete_'.$id))wp_die('Unauthorized');global $wpdb;$wpdb->delete($wpdb->prefix.'ela_questions',['id'=>$id]);wp_safe_redirect(admin_url('admin.php?page=ela-questions'));exit; }
     public function check_answer(){check_ajax_referer('ela_result','nonce');global $wpdb;$id=absint($_POST['question_id']??0);$choice=strtoupper(sanitize_text_field(wp_unslash($_POST['answer']??'')));if(!$id||!in_array($choice,['A','B','C','D'],true))wp_send_json_error(['message'=>'Invalid answer.'],400);$q=$wpdb->get_row($wpdb->prepare("SELECT id,correct_answer,level,skill FROM {$wpdb->prefix}ela_questions WHERE id=%d",$id));if(!$q)wp_send_json_error(['message'=>'Question not found.'],404);wp_send_json_success(['correct'=>hash_equals($q->correct_answer,$choice),'level'=>$q->level,'skill'=>$q->skill]);}
-    public function save_result(){check_ajax_referer('ela_result','nonce');$score=max(0,min(100,(int)($_POST['score']??0)));$level=$this->clean_choice($_POST['level']??'A1',$this->levels,'A1');$skills=isset($_POST['skills'])?json_decode(wp_unslash($_POST['skills']),true):[];ELA_DB::save_result(get_current_user_id(),$score,$level,is_array($skills)?$skills:[]);wp_send_json_success();}
-    public function assets(){if(!is_singular())return;global $post;if($post&&has_shortcode($post->post_content,'english_level_test')){wp_enqueue_style('ela-style',plugins_url('assets/style.css',__FILE__),[],ELA_VERSION);wp_enqueue_script('ela-script',plugins_url('assets/app.js',__FILE__),[],ELA_VERSION,true);wp_localize_script('ela-script','ELA_CONFIG',['ajax_url'=>admin_url('admin-ajax.php'),'nonce'=>wp_create_nonce('ela_result')]);}}
+    public function save_result(){check_ajax_referer('ela_result','nonce');$score=max(0,min(100,(int)($_POST['score']??0)));$level=$this->clean_choice($_POST['level']??'A1',$this->levels,'A1');$skills=isset($_POST['skills'])?json_decode(wp_unslash($_POST['skills']),true):[];$id=ELA_DB::save_result(get_current_user_id(),$score,$level,is_array($skills)?$skills:[]);if(!$id)wp_send_json_error(['message'=>'Could not save result.'],500);wp_send_json_success(['id'=>(int)$id,'url'=>$this->result_url($id)]);}
+    private function result_url($id){$page_id=absint(get_option('ela_page_result',0));$url=$page_id?get_permalink($page_id):home_url('/');return add_query_arg('ela_result',absint($id),$url);}
+    public function assets(){if(!is_singular())return;global $post;if($post&&(has_shortcode($post->post_content,'english_level_test')||has_shortcode($post->post_content,'english_level_result'))){wp_enqueue_style('ela-style',plugins_url('assets/style.css',__FILE__),[],ELA_VERSION);if(has_shortcode($post->post_content,'english_level_test')){wp_enqueue_script('ela-script',plugins_url('assets/app.js',__FILE__),[],ELA_VERSION,true);wp_localize_script('ela-script','ELA_CONFIG',['ajax_url'=>admin_url('admin-ajax.php'),'nonce'=>wp_create_nonce('ela_result'),'result_url'=>$this->result_url(0)]);}}}
     public function shortcode(){global $wpdb;$questions=$wpdb->get_results("SELECT * FROM {$wpdb->prefix}ela_questions ORDER BY FIELD(level,'A1','A2','B1','B2','C1','C2'),id ASC");if(!$questions)return '<p>No questions available.</p>';ob_start();?><div id="ela-test" class="ela-test" dir="ltr"><div class="ela-progress"><span id="ela-progress-bar"></span></div><div id="ela-question-wrap"></div><button type="button" id="ela-next">Next</button><div id="ela-result" hidden></div></div><script>window.ELA_QUESTIONS=<?php echo wp_json_encode(array_map(function($q){return ['id'=>(int)$q->id,'question'=>$q->question,'options'=>['A'=>$q->option_a,'B'=>$q->option_b,'C'=>$q->option_c,'D'=>$q->option_d],'level'=>$q->level,'skill'=>$q->skill];},$questions));?>;</script><?php return ob_get_clean();}
+    public function result_shortcode(){
+        $id=absint($_GET['ela_result']??0);
+        if(!$id)return '<div class="ela-result-page ela-result-empty"><h2>Your English Level Result</h2><p>Please complete the placement test first.</p></div>';
+        $result=ELA_DB::get_result($id);
+        if(!$result)return '<div class="ela-result-page ela-result-empty"><h2>Result not found</h2><p>The requested result could not be found.</p></div>';
+        $skills=json_decode($result->skills,true);$skills=is_array($skills)?$skills:[];
+        $labels=['grammar'=>'Grammar','vocabulary'=>'Vocabulary','reading'=>'Reading','listening'=>'Listening'];
+        ob_start(); ?>
+        <div class="ela-result-page" dir="ltr">
+            <div class="ela-result-hero"><span class="ela-result-kicker">English Placement Assessment</span><h2>Your estimated CEFR level</h2><div class="ela-level-badge"><?php echo esc_html($result->level);?></div><div class="ela-result-score"><strong><?php echo (int)$result->score;?>%</strong><span>overall score</span></div></div>
+            <div class="ela-result-section"><h3>Skill breakdown</h3><div class="ela-result-skills">
+            <?php foreach($labels as $key=>$label):$level=isset($skills[$key])?$skills[$key]:'—';?><div class="ela-result-skill"><div><strong><?php echo esc_html($label);?></strong><span><?php echo esc_html($level);?></span></div><div class="ela-skill-bar"><span style="width:<?php echo $level==='A1'?20:($level==='A2'?35:($level==='B1'?50:($level==='B2'?68:($level==='C1'?84:($level==='C2'?100:0)))));?>%"></span></div></div><?php endforeach;?>
+            </div></div>
+            <div class="ela-result-footer"><p>Assessment completed on <?php echo esc_html(wp_date(get_option('date_format'),strtotime($result->created_at)));?>.</p><a class="ela-retry" href="<?php echo esc_url(get_permalink(absint(get_option('ela_page_test',0))));?>">Take the test again</a></div>
+        </div>
+        <?php return ob_get_clean();
+    }
 }
 new English_Level_Assessment();
