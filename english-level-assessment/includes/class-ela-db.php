@@ -22,3 +22,4 @@ class ELA_DB {
   }
  }
 }
+add_action('plugins_loaded',['ELA_DB','seed_expanded_bank'],20);
